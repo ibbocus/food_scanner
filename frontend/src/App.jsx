@@ -11,7 +11,7 @@ export default function App() {
     if (!code) return;
     setLoading(true);
     try {
-      const res = await fetch("https://qzaauchdr8.execute-api.eu-west-2.amazonaws.com/dev/request", {
+      const res = await fetch("https://lerlfamje2.execute-api.eu-west-2.amazonaws.com/dev/request", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ barcode: code })
