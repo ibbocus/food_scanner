@@ -38,4 +38,4 @@ jobs:
           push:    true
           platforms: linux/amd64
           tags: |
-            046873714594.dkr.ecr.eu-west-2.amazonaws.com/${{ inputs.folder }}-046873714594:latest
+            046873714594.dkr.ecr.eu-west-2.amazonaws.com/${{ inputs.folder }}:latest
