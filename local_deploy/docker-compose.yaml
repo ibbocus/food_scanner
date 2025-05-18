@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  lambda_function:
+    build:
+      context: ./../lambda/fetch_articles
+      dockerfile: Dockerfile
+    ports:
+      - "9000:8080"
+    volumes:
+      - ./../lambda/fetch_articles:/var/task
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+    command: ["lambda_function.lambda_handler"]
