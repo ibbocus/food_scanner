@@ -2,6 +2,7 @@ import os
 import boto3
 import re
 from decimal import Decimal
+import uuid
 
 # DynamoDB table name from environment
 dynamodb = boto3.resource('dynamodb')
@@ -41,5 +42,6 @@ def lambda_handler(event, context):
         tmp_path = f"/tmp/{os.path.basename(key)}"
         s3.download_file(bucket, key, tmp_path)
         data = process_image(tmp_path)
+        data['id'] = str(uuid.uuid4())
         save_to_dynamodb(data)
     return {'status': 'processed'}
