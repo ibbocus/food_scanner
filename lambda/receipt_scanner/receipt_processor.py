@@ -6,6 +6,8 @@ from decimal import Decimal
 import uuid
 import json
 from datetime import datetime
+import base64
+from io import BytesIO
 
 # DynamoDB table name from environment
 dynamodb = boto3.resource('dynamodb')
@@ -43,6 +45,53 @@ def save_to_dynamodb(record):
     table.put_item(Item=record)
 
 def lambda_handler(event, context):
+    # CORS preflight
+    if event.get('httpMethod') == 'OPTIONS':
+        return {
+            'statusCode': 200,
+            'headers': {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'OPTIONS,POST,GET',
+                'Access-Control-Allow-Headers': 'Content-Type,Authorization'
+            },
+            'body': ''
+        }
+
+    # API Gateway POST with image data
+    if event.get('httpMethod') == 'POST':
+        # Extract user_id from headers or default
+        headers = event.get('headers', {})
+        user_id = headers.get('user-id', 'anonymous')
+        upload_time = datetime.utcnow().isoformat()
+
+        # Decode image from body
+        body = event.get('body', '')
+        img_bytes = base64.b64decode(body) if event.get('isBase64Encoded') else body.encode('utf-8')
+        tmp_path = '/tmp/uploaded.img'
+        with open(tmp_path, 'wb') as f:
+            f.write(img_bytes)
+
+        # Process and save
+        data = process_image(tmp_path)
+        data.update({
+            'id': str(uuid.uuid4()),
+            'user_id': user_id,
+            'upload_time': upload_time,
+            'contents': data.pop('items')
+        })
+        save_to_dynamodb(data)
+
+        return {
+            'statusCode': 200,
+            'headers': {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'OPTIONS,POST,GET',
+                'Access-Control-Allow-Headers': 'Content-Type,Authorization'
+            },
+            'body': json.dumps(data, default=str)
+        }
+
+    # Existing S3 event handling
     s3 = boto3.client('s3')
     for rec in event.get('Records', []):
         bucket = rec['s3']['bucket']['name']
