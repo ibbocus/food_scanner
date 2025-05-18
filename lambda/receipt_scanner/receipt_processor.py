@@ -1,5 +1,6 @@
 import os
 import boto3
+import re
 
 # DynamoDB table name from environment
 dynamodb = boto3.resource('dynamodb')
@@ -20,7 +21,10 @@ def process_image(path):
         for field in doc.get('LineItemGroups', []):
             for item_group in field.get('LineItems', []):
                 name = item_group.get('LineItemExpenseFields', [])[0]['ValueDetection']['Text']
-                amount = float(item_group.get('LineItemExpenseFields', [])[1]['ValueDetection']['Text'])
+                raw_amount = item_group.get('LineItemExpenseFields', [])[1]['ValueDetection']['Text']
+                # Remove currency symbols and commas
+                cleaned = re.sub(r'[^\d\.\-]', '', raw_amount)
+                amount = float(cleaned) if cleaned else 0.0
                 items.append({'item': name, 'price': amount})
     return {'shop': merchant, 'items': items, 'source': os.path.basename(path)}
 
