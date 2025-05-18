@@ -115,6 +115,12 @@ resource "aws_lambda_function" "processor" {
   package_type  = "Image"
   image_uri     = var.lambda_image_uri
   role          = aws_iam_role.lambda_exec.arn
+
+  # Give the function up to 30 seconds to complete
+  timeout       = 30  
+
+  # (Optional) Increase memory so Textract calls and JSON parsing run faster
+  memory_size   = 512  
 }
 
 resource "aws_lambda_permission" "allow_api_gateway" {
@@ -140,10 +146,60 @@ resource "aws_iam_role" "lambda_exec" {
   })
 }
 
+
 resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
+
+resource "aws_iam_policy" "lambda_s3_read" {
+  name = "lambda_s3_read"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = [
+          "s3:GetObject",
+          "s3:ListBucket"
+        ],
+        Effect   = "Allow",
+        Resource = [
+          aws_s3_bucket.receipts_bucket.arn,
+          "${aws_s3_bucket.receipts_bucket.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_s3_read_attach" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = aws_iam_policy.lambda_s3_read.arn
+}
+
+# Allow Lambda to call Amazon Textract AnalyzeExpense
+resource "aws_iam_policy" "lambda_textract" {
+  name        = "lambda_textract_access"
+  description = "Allow Lambda to call Amazon Textract expense analysis"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["textract:AnalyzeExpense"]
+        Resource = ["*"]
+      }
+    ]
+  })
+}
+
+# Attach the Textract policy to the Lambda execution role
+resource "aws_iam_role_policy_attachment" "lambda_textract_attach" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = aws_iam_policy.lambda_textract.arn
+}
+
 
 resource "aws_api_gateway_deployment" "deployment" {
   rest_api_id = data.aws_api_gateway_rest_api.api.id
@@ -188,7 +244,6 @@ resource "aws_s3_bucket_notification" "receipts_trigger" {
   lambda_function {
     lambda_function_arn = aws_lambda_function.processor.arn
     events              = ["s3:ObjectCreated:*"]
-    filter_suffix       = ".png"
   }
 
   depends_on = [
@@ -203,3 +258,32 @@ resource "aws_cloudwatch_log_group" "lambda_log_group" {
     Application = "ReceiptScanner"
   }
 }
+
+# Allow Lambda to write to DynamoDB
+resource "aws_iam_policy" "lambda_dynamodb_write" {
+  name        = "lambda_dynamodb_write"
+  description = "Allow Lambda to put items into ReceiptsTable"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = [
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem"
+        ]
+        Resource = [
+          aws_dynamodb_table.ReceiptsTable.arn
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_dynamodb_write_attach" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = aws_iam_policy.lambda_dynamodb_write.arn
+}
+
+
+
