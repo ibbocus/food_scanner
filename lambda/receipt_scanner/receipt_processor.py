@@ -1,6 +1,7 @@
 import os
 import boto3
 import re
+from decimal import Decimal
 
 # DynamoDB table name from environment
 dynamodb = boto3.resource('dynamodb')
@@ -24,7 +25,7 @@ def process_image(path):
                 raw_amount = item_group.get('LineItemExpenseFields', [])[1]['ValueDetection']['Text']
                 # Remove currency symbols and commas
                 cleaned = re.sub(r'[^\d\.\-]', '', raw_amount)
-                amount = float(cleaned) if cleaned else 0.0
+                amount = Decimal(cleaned) if cleaned else Decimal('0.0')
                 items.append({'item': name, 'price': amount})
     return {'shop': merchant, 'items': items, 'source': os.path.basename(path)}
 
