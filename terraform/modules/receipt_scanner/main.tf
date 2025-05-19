@@ -8,12 +8,16 @@ resource "aws_api_gateway_resource" "receipt-scanner" {
   path_part   = "receipt-scanner"
 }
 
-resource "aws_api_gateway_method" "get_receipt-scanner" {
+resource "aws_api_gateway_method" "post_receipt-scanner" {
   rest_api_id   = data.aws_api_gateway_rest_api.api.id
   resource_id   = aws_api_gateway_resource.receipt-scanner.id
-  http_method   = "GET"
+  http_method   = "POST"
   authorization = "NONE"
+  request_models = {
+    "application/json" = "Empty"
+  }
 }
+
 resource "aws_api_gateway_method" "options_receipt-scanner" {
   rest_api_id   = data.aws_api_gateway_rest_api.api.id
   resource_id   = aws_api_gateway_resource.receipt-scanner.id
@@ -53,20 +57,19 @@ resource "aws_api_gateway_method_response" "options_response_200" {
   }
 }
 
-resource "aws_api_gateway_method_response" "get_response_200" {
+
+resource "aws_api_gateway_method_response" "post_response_200" {
   rest_api_id = data.aws_api_gateway_rest_api.api.id
   resource_id = aws_api_gateway_resource.receipt-scanner.id
-  http_method = aws_api_gateway_method.get_receipt-scanner.http_method
+  http_method = aws_api_gateway_method.post_receipt-scanner.http_method
   status_code = "200"
-
   response_models = {
     "application/json" = "Empty"
   }
-
   response_parameters = {
-    "method.response.header.Access-Control-Allow-Origin" = true
-    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
     "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Headers" = true
   }
 }
 
@@ -77,36 +80,33 @@ resource "aws_api_gateway_integration_response" "options_integration_response" {
   status_code = aws_api_gateway_method_response.options_response_200.status_code
 
   response_parameters = {
-    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,user-id'"
     "method.response.header.Access-Control-Allow-Methods" = "'OPTIONS,POST'"
     "method.response.header.Access-Control-Allow-Origin"  = "'*'"
   }
 }
 
-
-resource "aws_api_gateway_integration" "lambda_proxy_get" {
+resource "aws_api_gateway_integration" "lambda_proxy_post" {
   rest_api_id             = data.aws_api_gateway_rest_api.api.id
   resource_id             = aws_api_gateway_resource.receipt-scanner.id
-  http_method             = aws_api_gateway_method.get_receipt-scanner.http_method
-  integration_http_method = "GET"
+  http_method             = aws_api_gateway_method.post_receipt-scanner.http_method
+  integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = aws_lambda_function.processor.invoke_arn
 }
 
-resource "aws_api_gateway_integration_response" "get_integration_response" {
+resource "aws_api_gateway_integration_response" "post_integration_response" {
   rest_api_id = data.aws_api_gateway_rest_api.api.id
   resource_id = aws_api_gateway_resource.receipt-scanner.id
-  http_method = aws_api_gateway_method.get_receipt-scanner.http_method
-  status_code = aws_api_gateway_method_response.get_response_200.status_code
-
+  http_method = aws_api_gateway_method.post_receipt-scanner.http_method
+  status_code = aws_api_gateway_method_response.post_response_200.status_code
   response_parameters = {
     "method.response.header.Access-Control-Allow-Origin"  = "'*'"
-    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
     "method.response.header.Access-Control-Allow-Methods" = "'OPTIONS,POST'"
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,Authorization,user-id'"
   }
-
   depends_on = [
-    aws_api_gateway_integration.lambda_proxy_get
+    aws_api_gateway_integration.lambda_proxy_post
   ]
 }
 
@@ -204,7 +204,7 @@ resource "aws_iam_role_policy_attachment" "lambda_textract_attach" {
 resource "aws_api_gateway_deployment" "deployment" {
   rest_api_id = data.aws_api_gateway_rest_api.api.id
   depends_on = [
-    aws_api_gateway_integration.lambda_proxy_get
+    aws_api_gateway_integration.lambda_proxy_post
   ]
 }
 
@@ -284,6 +284,3 @@ resource "aws_iam_role_policy_attachment" "lambda_dynamodb_write_attach" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = aws_iam_policy.lambda_dynamodb_write.arn
 }
-
-
-

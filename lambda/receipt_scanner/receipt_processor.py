@@ -12,6 +12,11 @@ from io import BytesIO
 # DynamoDB table name from environment
 dynamodb = boto3.resource('dynamodb')
 TABLE_NAME = os.getenv('DDB_TABLE', 'ReceiptsTable')
+CORS_HEADERS = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'OPTIONS,POST',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization,user-id'
+}
 
 def process_image(path):
     client = boto3.client('textract')
@@ -46,49 +51,49 @@ def save_to_dynamodb(record):
 
 def lambda_handler(event, context):
     # CORS preflight
-    if event.get('httpMethod') == 'OPTIONS':
+    try:
+        if event.get('httpMethod') == 'OPTIONS':
+            return {
+                'statusCode': 200,
+                'headers': CORS_HEADERS,
+                'body': ''
+            }
+
+        # API Gateway POST with image data
+        if event.get('httpMethod') == 'POST':
+            # Extract user_id from headers or default
+            headers = event.get('headers', {})
+            user_id = headers.get('user-id', 'anonymous')
+            upload_time = datetime.utcnow().isoformat()
+
+            # Decode image from body
+            body = event.get('body', '')
+            img_bytes = base64.b64decode(body) if event.get('isBase64Encoded') else body.encode('utf-8')
+            tmp_path = '/tmp/uploaded.img'
+            with open(tmp_path, 'wb') as f:
+                f.write(img_bytes)
+
+            # Process and save
+            data = process_image(tmp_path)
+            data.update({
+                'id': str(uuid.uuid4()),
+                'user_id': user_id,
+                'upload_time': upload_time,
+                'contents': data.pop('items')
+            })
+            save_to_dynamodb(data)
+
+            return {
+                'statusCode': 200,
+                'headers': CORS_HEADERS,
+                'body': json.dumps(data, default=str)
+            }
+    except Exception as e:
+        # 3) Error path must also include CORS headers
         return {
-            'statusCode': 200,
-            'headers': {
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Methods': 'OPTIONS,POST,GET',
-                'Access-Control-Allow-Headers': 'Content-Type,Authorization'
-            },
-            'body': ''
-        }
-
-    # API Gateway POST with image data
-    if event.get('httpMethod') == 'POST':
-        # Extract user_id from headers or default
-        headers = event.get('headers', {})
-        user_id = headers.get('user-id', 'anonymous')
-        upload_time = datetime.utcnow().isoformat()
-
-        # Decode image from body
-        body = event.get('body', '')
-        img_bytes = base64.b64decode(body) if event.get('isBase64Encoded') else body.encode('utf-8')
-        tmp_path = '/tmp/uploaded.img'
-        with open(tmp_path, 'wb') as f:
-            f.write(img_bytes)
-
-        # Process and save
-        data = process_image(tmp_path)
-        data.update({
-            'id': str(uuid.uuid4()),
-            'user_id': user_id,
-            'upload_time': upload_time,
-            'contents': data.pop('items')
-        })
-        save_to_dynamodb(data)
-
-        return {
-            'statusCode': 200,
-            'headers': {
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Methods': 'OPTIONS,POST,GET',
-                'Access-Control-Allow-Headers': 'Content-Type,Authorization'
-            },
-            'body': json.dumps(data, default=str)
+            'statusCode': 500,
+            'headers': CORS_HEADERS,
+            'body': json.dumps({'error': str(e)})
         }
 
     # Existing S3 event handling
@@ -115,6 +120,24 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
     # Local debug runner
     import sys
+    # If first arg is "--api", simulate API Gateway POST
+    if len(sys.argv) > 1 and sys.argv[1] == "--api":
+        # Next arg is path
+        path = sys.argv[2] if len(sys.argv) > 2 else "images/receipt.jpg"
+        user_id = path.split("/")[0]
+        upload_time = datetime.utcnow().isoformat()
+        # Read and base64-encode
+        with open(path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode("utf-8")
+        event = {
+            "httpMethod": "POST",
+            "headers": {"user-id": user_id},
+            "body": img_b64,
+            "isBase64Encoded": True
+        }
+        resp = lambda_handler(event, None)
+        logging.debug("API Gateway simulation response: %s", json.dumps(resp, default=str, indent=2))
+        sys.exit(0)
     path = sys.argv[1] if len(sys.argv) > 1 else "images/receipt.jpg"
     user_id = path.split("/")[0]
     upload_time = datetime.utcnow().isoformat()
