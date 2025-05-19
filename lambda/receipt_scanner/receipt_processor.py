@@ -6,112 +6,91 @@ from decimal import Decimal
 import uuid
 import json
 from datetime import datetime
-import base64
-from io import BytesIO
+import sys
+
+
+# Supermarket name detection dictionary
+SUPERMARKETS = {
+    "tesco": "Tesco",
+    "sainsbury": "Sainsbury",
+    "asda": "Asda",
+    "morrisons": "Morrisons",
+    "aldi": "Aldi",
+    "lidl": "Lidl",
+    "waitrose": "Waitrose",
+    "co-op": "Co-op",
+    "co op": "Co-op",
+    "coop": "Co-op"
+}
 
 # DynamoDB table name from environment
 dynamodb = boto3.resource('dynamodb')
 TABLE_NAME = os.getenv('DDB_TABLE', 'ReceiptsTable')
-CORS_HEADERS = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'OPTIONS,POST',
-    'Access-Control-Allow-Headers': 'Content-Type,Authorization,user-id'
-}
 
-def process_image(path):
+
+# Detect supermarket chain from raw receipt text
+def detect_supermarket(raw_text: str) -> str:
+    """
+    Scan raw receipt text for known supermarket names.
+    Returns the matching chain display name, or None.
+    """
+    txt = raw_text.lower()
+    for key, display in SUPERMARKETS.items():
+        if key in txt:
+            return display
+    return None
+
+
+def process_image(bucket, key):
     client = boto3.client('textract')
-    with open(path, 'rb') as document:
-        image_bytes = document.read()
-    response = client.analyze_expense(Document={'Bytes': image_bytes})
-    # Extract merchant name
-    merchant = 'Unknown'
-    if 'MerchantName' in response['ExpenseDocuments'][0]['SummaryFields'][0]:
-        merchant = response['ExpenseDocuments'][0]['SummaryFields'][0]['ValueDetection']['Text']
+    response = client.analyze_expense(Document={'S3Object': {'Bucket': bucket, 'Name': key}})
+    # Combine all SummaryFields text for fallback search
+    all_summary = " ".join(
+        f.get('ValueDetection', {}).get('Text', '')
+        for f in response['ExpenseDocuments'][0].get('SummaryFields', [])
+    )
+
+    # 1) Try supermarket list detection
+    merchant = detect_supermarket(all_summary)
+
+    # 2) Fallback to VENDOR_NAME field if none matched
+    if not merchant:
+        for field in response['ExpenseDocuments'][0].get('SummaryFields', []):
+            if field.get('Type', {}).get('Text') == 'VENDOR_NAME':
+                merchant = field.get('ValueDetection', {}).get('Text')
+                break
+        else:
+            merchant = 'Unknown'
+    # Extract transaction date
     receipt_time = None
     for field in response['ExpenseDocuments'][0].get('SummaryFields', []):
-        if field.get('Type', {}).get('Text') == 'TransactionDate':
-            receipt_time = field.get('ValueDetection', {}).get('Text')
+        if field.get('Type', {}).get('Text') == 'TRANSACTION_DATE':
+            receipt_time = field['ValueDetection']['Text']
     # Extract line items
     items = []
     for doc in response['ExpenseDocuments']:
-        for field in doc.get('LineItemGroups', []):
-            for item_group in field.get('LineItems', []):
-                name = item_group.get('LineItemExpenseFields', [])[0]['ValueDetection']['Text']
-                raw_amount = item_group.get('LineItemExpenseFields', [])[1]['ValueDetection']['Text']
-                # Remove currency symbols and commas
+        for group in doc.get('LineItemGroups', []):
+            for item in group.get('LineItems', []):
+                fields = item.get('LineItemExpenseFields', [])
+                name = fields[0]['ValueDetection']['Text'] if len(fields) > 0 else ''
+                raw_amount = fields[1]['ValueDetection']['Text'] if len(fields) > 1 else '0'
                 cleaned = re.sub(r'[^\d\.\-]', '', raw_amount)
                 amount = Decimal(cleaned) if cleaned else Decimal('0.0')
                 items.append({'item': name, 'price': amount})
-    print(items)
-    return {'shop': merchant, 'items': items, 'source': os.path.basename(path), 'receipt_time': receipt_time}
+    return {'shop': merchant, 'items': items, 'source': key, 'receipt_time': receipt_time}
 
 def save_to_dynamodb(record):
     table = dynamodb.Table(TABLE_NAME)
     table.put_item(Item=record)
 
 def lambda_handler(event, context):
-    logging.debug("Lambda invoked with event: %s", json.dumps(event, default=str))
-    # CORS preflight
-    try:
-        if event.get('httpMethod') == 'OPTIONS':
-            return {
-                'statusCode': 200,
-                'headers': CORS_HEADERS,
-                'body': ''
-            }
-
-        # API Gateway POST with image data
-        if event.get('httpMethod') == 'POST':
-            # Extract user_id from headers or default
-            headers = event.get('headers', {})
-            user_id = headers.get('user-id', 'anonymous')
-            upload_time = datetime.utcnow().isoformat()
-
-            logging.debug("Processing POST branch for user_id=%s", user_id)
-            # Decode image from body
-            body = event.get('body', '')
-            img_bytes = base64.b64decode(body) if event.get('isBase64Encoded') else body.encode('utf-8')
-            tmp_path = '/tmp/uploaded.img'
-            with open(tmp_path, 'wb') as f:
-                f.write(img_bytes)
-
-            # Process and save
-            data = process_image(tmp_path)
-            data.update({
-                'id': str(uuid.uuid4()),
-                'user_id': user_id,
-                'upload_time': upload_time,
-                'contents': data.pop('items')
-            })
-            save_to_dynamodb(data)
-            logging.debug("Record saved to DynamoDB for id=%s", data["id"])
-
-            return {
-                'statusCode': 200,
-                'headers': CORS_HEADERS,
-                'body': json.dumps(data, default=str)
-            }
-    except Exception as e:
-        logging.error("Exception in lambda_handler: %s", e, exc_info=True)
-        # 3) Error path must also include CORS headers
-        return {
-            'statusCode': 500,
-            'headers': CORS_HEADERS,
-            'body': json.dumps({'error': str(e)})
-        }
-
-    # Existing S3 event handling
-    s3 = boto3.client('s3')
-    logging.debug("Processing S3 event notifications")
+    logging.debug("Lambda invoked with event: %s", json.dumps(event, default=str))    
     for rec in event.get('Records', []):
         bucket = rec['s3']['bucket']['name']
         key = rec['s3']['object']['key']
         user_id = key.split('/')[0]
         upload_time = datetime.utcnow().isoformat()
-        tmp_path = f"/tmp/{os.path.basename(key)}"
-        logging.debug("Downloading s3://%s/%s", bucket, key)
-        s3.download_file(bucket, key, tmp_path)
-        data = process_image(tmp_path)
+        data = process_image(bucket, key)
         data.update({
             'id': str(uuid.uuid4()),
             'user_id': user_id,
@@ -124,28 +103,8 @@ def lambda_handler(event, context):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
-    # Local debug runner
-    import sys
-    # If first arg is "--api", simulate API Gateway POST
-    if len(sys.argv) > 1 and sys.argv[1] == "--api":
-        # Next arg is path
-        path = sys.argv[2] if len(sys.argv) > 2 else "images/receipt.jpg"
-        user_id = path.split("/")[0]
-        upload_time = datetime.utcnow().isoformat()
-        # Read and base64-encode
-        with open(path, "rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode("utf-8")
-        event = {
-            "httpMethod": "POST",
-            "headers": {"user-id": user_id},
-            "body": img_b64,
-            "isBase64Encoded": True
-        }
-        resp = lambda_handler(event, None)
-        logging.debug("API Gateway simulation response: %s", json.dumps(resp, default=str, indent=2))
-        sys.exit(0)
-    path = sys.argv[1] if len(sys.argv) > 1 else "images/receipt.jpg"
+    logging.basicConfig(level=logging.INFO)
+    path = sys.argv[1] if len(sys.argv) > 1 else "images/image.png"
     user_id = path.split("/")[0]
     upload_time = datetime.utcnow().isoformat()
     data = process_image(path)
@@ -155,6 +114,8 @@ if __name__ == "__main__":
         "upload_time": upload_time,
         "contents": data.pop("items")
     })
+
+    print(data)
     logging.debug("Generated record for DynamoDB: %s", json.dumps(data, default=str, indent=2))
     # Attempt to save to DynamoDB
     try:
