@@ -50,6 +50,7 @@ def save_to_dynamodb(record):
     table.put_item(Item=record)
 
 def lambda_handler(event, context):
+    logging.debug("Lambda invoked with event: %s", json.dumps(event, default=str))
     # CORS preflight
     try:
         if event.get('httpMethod') == 'OPTIONS':
@@ -66,6 +67,7 @@ def lambda_handler(event, context):
             user_id = headers.get('user-id', 'anonymous')
             upload_time = datetime.utcnow().isoformat()
 
+            logging.debug("Processing POST branch for user_id=%s", user_id)
             # Decode image from body
             body = event.get('body', '')
             img_bytes = base64.b64decode(body) if event.get('isBase64Encoded') else body.encode('utf-8')
@@ -82,6 +84,7 @@ def lambda_handler(event, context):
                 'contents': data.pop('items')
             })
             save_to_dynamodb(data)
+            logging.debug("Record saved to DynamoDB for id=%s", data["id"])
 
             return {
                 'statusCode': 200,
@@ -89,6 +92,7 @@ def lambda_handler(event, context):
                 'body': json.dumps(data, default=str)
             }
     except Exception as e:
+        logging.error("Exception in lambda_handler: %s", e, exc_info=True)
         # 3) Error path must also include CORS headers
         return {
             'statusCode': 500,
@@ -98,12 +102,14 @@ def lambda_handler(event, context):
 
     # Existing S3 event handling
     s3 = boto3.client('s3')
+    logging.debug("Processing S3 event notifications")
     for rec in event.get('Records', []):
         bucket = rec['s3']['bucket']['name']
         key = rec['s3']['object']['key']
         user_id = key.split('/')[0]
         upload_time = datetime.utcnow().isoformat()
         tmp_path = f"/tmp/{os.path.basename(key)}"
+        logging.debug("Downloading s3://%s/%s", bucket, key)
         s3.download_file(bucket, key, tmp_path)
         data = process_image(tmp_path)
         data.update({
@@ -113,6 +119,7 @@ def lambda_handler(event, context):
             'contents': data.pop('items')
         })
         save_to_dynamodb(data)
+        logging.debug("Record saved to DynamoDB for id=%s", data["id"])
     return {'status': 'processed'}
 
 
